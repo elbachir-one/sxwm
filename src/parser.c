@@ -136,43 +136,52 @@ int parser(Config *cfg)
 	char path[PATH_MAX];
 	const char *home = getenv("HOME");
 	if (!home) {
-		fputs("sxwmrc: HOME not set\n", stderr);
+		fprintf(stderr, "sxwmrc: HOME not set\n");
 		return -1;
 	}
 
-	// check $XDG_CONFIG_HOME/sxwmrc, then $XDG_CONFIG_HOME/sxwm/sxwmrc, then $HOME/.config/sxwmrc
 	const char *xdg_config_home = getenv("XDG_CONFIG_HOME");
+	int config_found = 0;
 
-    if (xdg_config_home) {
-        snprintf(path, sizeof path, "%s/sxwmrc", xdg_config_home);
-        if (access(path, R_OK) == 0) {
-            goto found;
-        }
-
-        snprintf(path, sizeof path, "%s/sxwm/sxwmrc", xdg_config_home);
-        if (access(path, R_OK) == 0) {
-            goto found;
-        }
-    }
-
-    snprintf(path, sizeof path, "%s/.config/sxwmrc", home);
-    if (access(path, R_OK) == 0) {
-        goto found;
-    }
-
-	snprintf(path, sizeof path, "/usr/local/share/sxwmrc");
-	if (access(path, R_OK) == 0) {
-		goto found;
+	if (xdg_config_home) {
+		snprintf(path, sizeof path, "%s/sxwmrc", xdg_config_home);
+		if (access(path, R_OK) == 0) {
+			config_found = 1;
+		} else {
+			snprintf(path, sizeof path, "%s/sxwm/sxwmrc", xdg_config_home);
+			if (access(path, R_OK) == 0) {
+				config_found = 1;
+			}
+		}
 	}
 
-found:
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        fprintf(stderr, "sxwmrc: cannot open %s\n", path);
-        return -1;
-    }
+	if (!config_found) {
+		snprintf(path, sizeof path, "%s/.config/sxwmrc", home);
+		if (access(path, R_OK) == 0) {
+			config_found = 1;
+		}
+	}
 
-	char line[512];
+	if (!config_found) {
+		snprintf(path, sizeof path, "/usr/local/share/sxwmrc");
+		if (access(path, R_OK) == 0) {
+			config_found = 1;
+		}
+	}
+
+	if (!config_found) {
+		fprintf(stderr, "sxwmrc: no config file found\n");
+		return -1;
+	}
+
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		fprintf(stderr, "sxwmrc: cannot open %s\n", path);
+		return -1;
+	}
+
+	char *line = NULL;
+	size_t len = 0;
 	int lineno = 0;
 	int should_floatn = 0;
 
@@ -180,10 +189,27 @@ found:
 		cfg->should_float[i] = NULL;
 	}
 
-	while (fgets(line, sizeof line, f)) {
+	while (getline(&line, &len, f) != -1) {
 		lineno++;
+		line[strcspn(line, "\n")] = 0;
 		char *s = strip(line);
-		if (!*s || *s == '#') {
+		if (!*s || *s == '#') continue;
+
+		// Autostart inline execution (migrated from run_autostart)
+		const char *prefix = "autostart : ";
+		if (strncmp(s, prefix, strlen(prefix)) == 0) {
+			const char *cmd = s + strlen(prefix);
+			char fullcmd[PATH_MAX];
+			if (cmd[0] == '~') {
+				snprintf(fullcmd, sizeof fullcmd, "%s%s", home, cmd + 1);
+				cmd = fullcmd;
+			}
+			if (fork() == 0) {
+				setsid();
+				execlp("sh", "sh", "-c", cmd, (char *)NULL);
+				fprintf(stderr, "sxwm: failed to exec %s\n", cmd);
+				_exit(EXIT_FAILURE);
+			}
 			continue;
 		}
 
@@ -200,90 +226,53 @@ found:
 			unsigned m = parse_mods(rest, cfg);
 			if (m & (Mod1Mask | Mod4Mask)) {
 				cfg->modkey = m;
-			}
-			else {
+			} else {
 				fprintf(stderr, "sxwmrc:%d: unknown mod_key '%s'\n", lineno, rest);
 			}
 		}
-		else if (!strcmp(key, "gaps")) {
-			cfg->gaps = atoi(rest);
-		}
-		else if (!strcmp(key, "border_width")) {
-			cfg->border_width = atoi(rest);
-		}
-		else if (!strcmp(key, "focused_border_colour")) {
-			cfg->border_foc_col = parse_col(rest);
-		}
-		else if (!strcmp(key, "unfocused_border_colour")) {
-			cfg->border_ufoc_col = parse_col(rest);
-		}
-		else if (!strcmp(key, "swap_border_colour")) {
-			cfg->border_swap_col = parse_col(rest);
-		}
-		else if (!strcmp(key, "master_width")) {
-			cfg->master_width = atoi(rest) / 100.0f;
-		}
-		else if (!strcmp(key, "motion_throttle")) {
-			cfg->motion_throttle = atoi(rest);
-		}
-		else if (!strcmp(key, "resize_master_amount")) {
-			cfg->resize_master_amt = atoi(rest);
-		}
-		else if (!strcmp(key, "snap_distance")) {
-			cfg->snap_distance = atoi(rest);
-		}
+		else if (!strcmp(key, "gaps")) cfg->gaps = atoi(rest);
+		else if (!strcmp(key, "border_width")) cfg->border_width = atoi(rest);
+		else if (!strcmp(key, "focused_border_colour")) cfg->border_foc_col = parse_col(rest);
+		else if (!strcmp(key, "unfocused_border_colour")) cfg->border_ufoc_col = parse_col(rest);
+		else if (!strcmp(key, "swap_border_colour")) cfg->border_swap_col = parse_col(rest);
+		else if (!strcmp(key, "master_width")) cfg->master_width = atoi(rest) / 100.0f;
+		else if (!strcmp(key, "motion_throttle")) cfg->motion_throttle = atoi(rest);
+		else if (!strcmp(key, "resize_master_amount")) cfg->resize_master_amt = atoi(rest);
+		else if (!strcmp(key, "snap_distance")) cfg->snap_distance = atoi(rest);
 		else if (!strcmp(key, "should_float")) {
-			// should_float: binary --arg,binary2 parameter --arg,binary3
-			
 			if (should_floatn >= 256) {
 				fprintf(stderr, "sxwmrc:%d: too many should_float entries\n", lineno);
 				continue;
 			}
 
-			char *win = strip(rest);
-			
 			cfg->should_float[should_floatn] = malloc(256 * sizeof(char *));
-
-			char *comma_ptr, *space_ptr;
-			char *comma = strtok_r(win, ",", &comma_ptr);
-
-			while (comma) {
-				if (should_floatn < 256) {
-					// if comma starts and ends with quotes, remove them
-					if (*comma == '"') {
-						comma++;
-					}
-					char *end = comma + strlen(comma) - 1;
-					if (*end == '"') {
-						*end = '\0';
-					}
-
-					printf("comma: %s\n", comma);
-					char *argv = strtok_r(comma, " ", &space_ptr);
-					int i = 0;
-
-
-					while (argv) {
-						printf("argv: %s\n", argv);
-						cfg->should_float[should_floatn][i] = strdup(argv);
-						argv = strtok_r(NULL, " ", &space_ptr);
-						i++;
-					}
-
-					should_floatn++;
-					cfg->should_float[should_floatn] = malloc(256 * sizeof(char *));
-
-				} else {
-					fprintf(stderr, "sxwmrc:%d: too many should_float entries\n", lineno);
-					break;
-				}
-				comma = strtok_r(NULL, ",", &comma_ptr);
+			if (!cfg->should_float[should_floatn]) {
+				fprintf(stderr, "sxwmrc:%d: memory allocation failed\n", lineno);
+				continue;
 			}
 
+			int argi = 0;
+			char *comma_ptr, *space_ptr;
+			char *entry = strtok_r(rest, ",", &comma_ptr);
 
+			while (entry) {
+				entry = strip(entry);
+				if (*entry == '"') entry++;
+				char *end = entry + strlen(entry) - 1;
+				if (*end == '"') *end = '\0';
+
+				char *arg = strtok_r(entry, " ", &space_ptr);
+				while (arg && argi < 256) {
+					cfg->should_float[should_floatn][argi++] = strdup(arg);
+					arg = strtok_r(NULL, " ", &space_ptr);
+				}
+				entry = strtok_r(NULL, ",", &comma_ptr);
+			}
+
+			cfg->should_float[should_floatn][argi] = NULL;
 			should_floatn++;
 		}
-		else if (!strcmp(key, "call") || !strcmp(key, "bind")) {
+		else if (!strcmp(key, "bind") || !strcmp(key, "call")) {
 			char *mid = strchr(rest, ':');
 			if (!mid) {
 				fprintf(stderr, "sxwmrc:%d: '%s' missing action\n", lineno, key);
@@ -299,17 +288,17 @@ found:
 				fprintf(stderr, "sxwmrc:%d: bad key in '%s'\n", lineno, combo);
 				continue;
 			}
+
 			Binding *b = alloc_bind(cfg, mods, ks);
 			if (!b) {
-				fputs("sxwm: too many binds\n", stderr);
+				fprintf(stderr, "sxwm: too many binds\n");
 				break;
 			}
 
 			if (*act == '"' && !strcmp(key, "bind")) {
 				b->type = TYPE_CMD;
 				b->action.cmd = build_argv(strip_quotes(act));
-			}
-			else {
+			} else {
 				b->type = TYPE_FUNC;
 				Bool found = False;
 				for (int i = 0; call_table[i].name; i++) {
@@ -340,6 +329,7 @@ found:
 				fprintf(stderr, "sxwmrc:%d: bad key in '%s'\n", lineno, combo);
 				continue;
 			}
+
 			Binding *b = alloc_bind(cfg, mods, ks);
 			if (!b) {
 				fputs("sxwm: too many binds\n", stderr);
@@ -364,15 +354,7 @@ found:
 		}
 	}
 
-	// print should_float
-	for (int i = 0; i < should_floatn; i++) {
-		fprintf(stderr, "sxwmrc: should_float[%d]: ", i);
-		for (int j = 0; cfg->should_float[i][j]; j++) {
-			fprintf(stderr, "%s ", cfg->should_float[i][j]);
-		}
-		fprintf(stderr, "\n");
-	}
-
+	free(line);
 	fclose(f);
 	remap_and_dedupe_binds(cfg);
 	return 0;

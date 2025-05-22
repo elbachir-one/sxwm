@@ -14,6 +14,8 @@
  *	  (C) Abhinav Prasai 2025
  */
 
+#define _POSIX_C_SOURCE 200809L
+
 #include <err.h>
 #include <stdio.h>
 #include <limits.h>
@@ -1114,36 +1116,60 @@ void quit(void)
 	XFreeCursor(dpy, c_move);
 	XFreeCursor(dpy, c_normal);
 	XFreeCursor(dpy, c_resize);
+
+	if (user_config.autostart_path) {
+		free(user_config.autostart_path);
+		user_config.autostart_path = NULL;
+	}
+
 	errx(0, "quitting...");
 }
 
 void reload_config(void)
 {
 	puts("sxwm: reloading config...");
-	memset(&user_config, 0, sizeof(user_config));
 
 	for (int i = 0; i < user_config.bindsn; i++) {
-		free(user_config.binds[i].action.cmd);
-		user_config.binds[i].action.cmd = NULL;
-
-		user_config.binds[i].action.fn = NULL;
-		user_config.binds[i].type = -1;
-		user_config.binds[i].keysym = 0;
-		user_config.binds[i].mods = 0;
+		if (user_config.binds[i].type == TYPE_CMD && user_config.binds[i].action.cmd) {
+			for (int j = 0; user_config.binds[i].action.cmd[j]; j++) {
+				free((char *)user_config.binds[i].action.cmd[j]);
+			}
+			free(user_config.binds[i].action.cmd);
+			user_config.binds[i].action.cmd = NULL;
+		}
 	}
+
+	for (int i = 0; i < 256 && user_config.should_float[i]; i++) {
+		for (int j = 0; user_config.should_float[i][j]; j++) {
+			free(user_config.should_float[i][j]);
+		}
+		free(user_config.should_float[i]);
+		user_config.should_float[i] = NULL;
+	}
+
+	if (user_config.autostart_path) {
+		free(user_config.autostart_path);
+		user_config.autostart_path = NULL;
+	}
+
+	memset(&user_config, 0, sizeof(user_config));
 
 	init_defaults();
 	if (parser(&user_config)) {
 		fprintf(stderr, "sxrc: error parsing config file\n");
 		init_defaults();
 	}
+
 	grab_keys();
 	XUngrabButton(dpy, AnyButton, AnyModifier, root);
-	XGrabButton(dpy, Button1, user_config.modkey, root, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+	XGrabButton(dpy, Button1, user_config.modkey, root, True,
+	            ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
 	            GrabModeAsync, GrabModeAsync, None, None);
 	XGrabButton(dpy, Button1, user_config.modkey | ShiftMask, root, True,
-	            ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync, GrabModeAsync, None, None);
-	XGrabButton(dpy, Button3, user_config.modkey, root, True, ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+	            ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+	            GrabModeAsync, GrabModeAsync, None, None);
+	XGrabButton(dpy, Button3, user_config.modkey, root, True,
+	            ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
 	            GrabModeAsync, GrabModeAsync, None, None);
 	XSync(dpy, False);
 
